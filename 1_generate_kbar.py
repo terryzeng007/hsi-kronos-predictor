@@ -24,7 +24,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
-def load_real_data(file_path="./data/HSI.xlsx"):
+def load_real_data(file_path="./data/HSI_2.xlsx"):
     """
     加载真实的历史数据
     
@@ -45,7 +45,7 @@ def load_real_data(file_path="./data/HSI.xlsx"):
         
         # 重命名列以匹配Kronos期望的格式
         column_mapping = {
-            'Date': 'timestamps',
+            'Date': 'date',
             'Open': 'open',
             'High': 'high', 
             'Low': 'low',
@@ -59,14 +59,14 @@ def load_real_data(file_path="./data/HSI.xlsx"):
                 df.rename(columns={old_col: new_col}, inplace=True)
         
         # 确保timestamps列存在且为datetime格式
-        if 'timestamps' not in df.columns:
+        if 'date' not in df.columns:
             if 'Date' in df.columns:
-                df['timestamps'] = pd.to_datetime(df['Date'])
+                df['date'] = pd.to_datetime(df['Date'])
             else:
                 # 如果没有日期列，创建一个日期范围
-                df['timestamps'] = pd.date_range(end=datetime.now(), periods=len(df), freq='D')
+                df['date'] = pd.date_range(end=datetime.now(), periods=len(df), freq='D')
         else:
-            df['timestamps'] = pd.to_datetime(df['timestamps'])
+            df['date'] = pd.to_datetime(df['date'])
         
         # 确保数值列是浮点类型
         numeric_cols = ['open', 'high', 'low', 'close', 'volume']
@@ -78,7 +78,7 @@ def load_real_data(file_path="./data/HSI.xlsx"):
         df.dropna(inplace=True)
         
         # 确保数据按时间排序
-        df = df.sort_values('timestamps').reset_index(drop=True)
+        df = df.sort_values('date').reset_index(drop=True)
         
         print(f"成功加载 {len(df)} 条真实历史数据")
         return df
@@ -114,7 +114,7 @@ def generate_kline_with_kronos(real_data, num_points=100):
         
         # 加载预训练的Kronos模型和分词器
         tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
-        model = Kronos.from_pretrained("NeoQuasar/Kronos-small")  # 使用small版本以节省资源
+        model = Kronos.from_pretrained("NeoQuasar/Kronos-base")  # 使用small版本以节省资源
         
         # 初始化预测器
         predictor = KronosPredictor(model, tokenizer, device='cuda' if torch.cuda.is_available() else 'cpu')
@@ -130,12 +130,14 @@ def generate_kline_with_kronos(real_data, num_points=100):
         if 'amount' not in x_df.columns:
             x_df['amount'] = x_df['close'] * x_df['volume'] / 1000  # 简单估算
         
-        x_timestamp = real_data.tail(lookback)['timestamps'].reset_index(drop=True)
+        x_timestamp = real_data.tail(lookback)['date']
         
         # 创建未来的时间戳
-        last_date = real_data['timestamps'].iloc[-1]
+        last_date = real_data['date'].iloc[-1]
         y_timestamp = pd.date_range(start=last_date + timedelta(days=1), periods=pred_len, freq='D')
-        
+        y_timestamp = pd.DataFrame(y_timestamp, columns=['date'])
+        y_timestamp['date'] = pd.to_datetime(y_timestamp['date'])
+        y_timestamp = y_timestamp['date']
         print(f"使用Kronos模型基于 {lookback} 天历史数据预测未来 {pred_len} 天的数据...")
         
         # 使用Kronos进行预测
@@ -151,7 +153,7 @@ def generate_kline_with_kronos(real_data, num_points=100):
         
         # 将预测结果与时间戳合并
         result_df = pd.DataFrame({
-            'timestamps': y_timestamp,
+            'date': y_timestamp,
             'open': pred_df['open'].values,
             'high': pred_df['high'].values,
             'low': pred_df['low'].values,
@@ -167,65 +169,12 @@ def generate_kline_with_kronos(real_data, num_points=100):
         return None
 
 
-def plot_kline_chart(df, title="K线图"):
-    """
-    绘制K线图
-    
-    Args:
-        df: 包含OHLCV数据的DataFrame
-        title: 图表标题
-    """
-    # 创建交互式图表
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.1,
-        subplot_titles=(title, '成交量'),
-        row_width=[0.7, 0.3]
-    )
-    
-    # 添加K线图
-    fig.add_trace(
-        go.Candlestick(
-            x=df['timestamps'],
-            open=df['open'],
-            high=df['high'],
-            low=df['low'],
-            close=df['close'],
-            name='K线'
-        ),
-        row=1, col=1
-    )
-    
-    # 添加成交量柱状图
-    fig.add_trace(
-        go.Bar(
-            x=df['timestamps'],
-            y=df['volume'],
-            name='成交量',
-            marker_color='lightblue'
-        ),
-        row=2, col=1
-    )
-    
-    # 更新布局
-    fig.update_layout(
-        height=800,
-        xaxis_rangeslider_visible=False
-    )
-    
-    # 显示图表
-    fig.show()
-    
-    # 同时保存为HTML文件
-    filename = f"kline_chart_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-    fig.write_html(filename)
-    print(f"K线图已保存为: {filename}")
-
 
 def plot_matplotlib_kline(df, title="K线图"):
     """
-    使用matplotlib绘制K线图（备用方法）
+    使用matplotlib绘制K线图，生成两种样式：
+    1. 带坐标轴的完整图
+    2. 纯净的只含K线的图
     
     Args:
         df: 包含OHLC数据的DataFrame
@@ -235,16 +184,18 @@ def plot_matplotlib_kline(df, title="K线图"):
         import matplotlib.pyplot as plt
         from matplotlib import rcParams
         from matplotlib.patches import Rectangle
+        import matplotlib.dates as mdates
         
         # 设置中文字体
         rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'DejaVu Sans']
         rcParams['axes.unicode_minus'] = False
         
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
+        # 第一种图：带坐标轴的完整图
+        fig1, ax1 = plt.subplots(figsize=(12, 6))
         
         # 绘制K线
         for idx, (_, row) in enumerate(df.iterrows()):
-            date = mdates.date2num(row['timestamps'])
+            date = mdates.date2num(row['date'])
             open_price = row['open']
             high_price = row['high']
             low_price = row['low']
@@ -262,20 +213,57 @@ def plot_matplotlib_kline(df, title="K线图"):
             rect = Rectangle((date-0.3, bottom), 0.6, height, facecolor=color, edgecolor=color)
             ax1.add_patch(rect)
         
-        ax1.set_title(title)
-        ax1.set_ylabel('价格')
-        ax1.grid(True, linestyle='--', alpha=0.6)
-        
-        # 绘制成交量
-        ax2.bar(df['timestamps'], df['volume'], width=0.6, color='lightblue', alpha=0.7)
-        ax2.set_ylabel('成交量')
-        ax2.grid(True, linestyle='--', alpha=0.6)
+        ax1.set_title(title, fontsize=14)
+        ax1.set_ylabel('价格', fontsize=12)
+        ax1.set_facecolor('white')  # 白色背景
+        ax1.grid(False)  # 无网格线
         
         # 格式化x轴
-        fig.autofmt_xdate()
+        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        ax1.tick_params(axis='x', rotation=45)
         
         plt.tight_layout()
+        plt.savefig(f"predict_graph/kline_with_axes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png", dpi=300, bbox_inches='tight')
         plt.show()
+        print("带坐标轴的K线图已保存")
+        
+        # 第二种图：纯净的只含K线的图
+        fig2, ax2 = plt.subplots(figsize=(12, 6))
+        
+        # 绘制K线
+        for idx, (_, row) in enumerate(df.iterrows()):
+            date = mdates.date2num(row['date'])
+            open_price = row['open']
+            high_price = row['high']
+            low_price = row['low']
+            close_price = row['close']
+            
+            # 判断涨跌
+            color = 'red' if close_price >= open_price else 'green'
+            
+            # 绘制最高价到最低价的线
+            ax2.plot([date, date], [low_price, high_price], color=color, linewidth=0.5)
+            
+            # 绘制开盘价到收盘价的实体
+            height = abs(close_price - open_price)
+            bottom = min(open_price, close_price)
+            rect = Rectangle((date-0.3, bottom), 0.6, height, facecolor=color, edgecolor=color)
+            ax2.add_patch(rect)
+        
+        # 设置纯净样式
+        ax2.set_facecolor('white')  # 白色背景
+        ax2.grid(False)  # 无网格线
+        ax2.set_xticks([])  # 移除x轴刻度
+        ax2.set_yticks([])  # 移除y轴刻度
+        ax2.spines['top'].set_visible(False)  # 隐藏顶部边框
+        ax2.spines['right'].set_visible(False)  # 隐藏右侧边框
+        ax2.spines['bottom'].set_visible(False)  # 隐藏底部边框
+        ax2.spines['left'].set_visible(False)  # 隐藏左侧边框
+        
+        plt.tight_layout()
+        plt.savefig(f"predict_graph/kline_pure_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png", dpi=300, bbox_inches='tight', facecolor='white')
+        plt.show()
+        print("纯净K线图已保存")
         
     except ImportError:
         print("matplotlib未安装，跳过matplotlib绘图")
@@ -307,15 +295,11 @@ def main():
     print("预测数据预览 (前10行):")
     print(kline_data.head(10))
     
-    # 绘制K线图
-    print("\n正在绘制K线图...")
-    plot_kline_chart(kline_data, "使用Kronos模型基于真实数据生成的预测K线图")
-    
-    # 可选：使用matplotlib绘制（如果需要）
-    # plot_matplotlib_kline(kline_data, "K线图 (matplotlib)")
+    # 使用matplotlib绘制（生成两种样式）
+    plot_matplotlib_kline(kline_data, "K线图 (matplotlib)")
     
     # 保存数据到CSV
-    csv_filename = f"generated_kline_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    csv_filename = f"predict_price/generated_kline_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     kline_data.to_csv(csv_filename, index=False)
     print(f"\n生成的K线数据已保存到: {csv_filename}")
 

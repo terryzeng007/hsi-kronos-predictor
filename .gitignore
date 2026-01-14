@@ -89,3 +89,14 @@ kronos_src/
 *.7z
 *.gz
 *.tar
+
+# SSH keys and other sensitive files
+*.key
+*.pem
+*.ppk
+*.pub
+!*.pub  # Allow .pub files specifically in data folder
+
+# Specific sensitive files
+001
+001.pub
