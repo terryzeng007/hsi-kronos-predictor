@@ -1,5 +1,5 @@
 """
-使用Kronos模型生成模拟K线数据并绘制K线图
+使用Kronos模型生成K线数据并绘制K线图
 """
 import pandas as pd
 import numpy as np
@@ -16,7 +16,7 @@ try:
     from model import Kronos, KronosTokenizer, KronosPredictor
     KRONOS_AVAILABLE = True
 except ImportError:
-    print("警告: 未找到Kronos模型，将使用模拟方法生成K线数据")
+    print("警告: 未找到Kronos模型")
     KRONOS_AVAILABLE = False
 
 import torch
@@ -24,84 +24,90 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
-def generate_mock_kline_data(start_date, num_points, initial_price=20000):
+def load_real_data(file_path="./data/HSI.xlsx"):
     """
-    生成模拟K线数据
+    加载真实的历史数据
     
     Args:
-        start_date: 开始日期
-        num_points: 数据点数量
-        initial_price: 初始价格
+        file_path: Excel文件路径
     
     Returns:
         DataFrame: 包含OHLCV数据的DataFrame
     """
-    dates = pd.date_range(start=start_date, periods=num_points, freq='D')
-    
-    # 生成模拟价格数据
-    prices = [initial_price]
-    volumes = []
-    
-    for i in range(1, num_points):
-        # 随机价格变动 (-2% 到 +2%)
-        change_pct = np.random.normal(0, 0.015)  # 平均无变化，标准差1.5%
-        new_price = prices[-1] * (1 + change_pct)
-        prices.append(new_price)
+    try:
+        df = pd.read_excel(file_path)
         
-        # 随机生成成交量
-        volume = np.random.randint(500000, 5000000)
-        volumes.append(volume)
-    
-    # 为第一天添加成交量
-    volumes.insert(0, np.random.randint(500000, 5000000))
-    
-    # 生成OHLC数据
-    opens = []
-    highs = []
-    lows = []
-    closes = []
-    
-    for i in range(num_points):
-        if i == 0:
-            open_price = initial_price
+        # 检查必要的列是否存在
+        required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+        for col in required_columns:
+            if col not in df.columns:
+                print(f"警告: 列 '{col}' 不存在于数据中")
+        
+        # 重命名列以匹配Kronos期望的格式
+        column_mapping = {
+            'Date': 'timestamps',
+            'Open': 'open',
+            'High': 'high', 
+            'Low': 'low',
+            'Close': 'close',
+            'Volume': 'volume'
+        }
+        
+        # 重命名现有列
+        for old_col, new_col in column_mapping.items():
+            if old_col in df.columns:
+                df.rename(columns={old_col: new_col}, inplace=True)
+        
+        # 确保timestamps列存在且为datetime格式
+        if 'timestamps' not in df.columns:
+            if 'Date' in df.columns:
+                df['timestamps'] = pd.to_datetime(df['Date'])
+            else:
+                # 如果没有日期列，创建一个日期范围
+                df['timestamps'] = pd.date_range(end=datetime.now(), periods=len(df), freq='D')
         else:
-            open_price = closes[i-1]  # 今天的开盘价是昨天的收盘价
+            df['timestamps'] = pd.to_datetime(df['timestamps'])
         
-        # 添加随机波动来生成高、低价
-        close_price = prices[i]
-        high_price = max(open_price, close_price) * (1 + abs(np.random.normal(0, 0.01)))
-        low_price = min(open_price, close_price) * (1 - abs(np.random.normal(0, 0.01)))
+        # 确保数值列是浮点类型
+        numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        opens.append(open_price)
-        highs.append(high_price)
-        lows.append(low_price)
-        closes.append(close_price)
-    
-    df = pd.DataFrame({
-        'timestamps': dates,
-        'open': opens,
-        'high': highs,
-        'low': lows,
-        'close': closes,
-        'volume': volumes
-    })
-    
-    return df
+        # 移除包含NaN值的行
+        df.dropna(inplace=True)
+        
+        # 确保数据按时间排序
+        df = df.sort_values('timestamps').reset_index(drop=True)
+        
+        print(f"成功加载 {len(df)} 条真实历史数据")
+        return df
+    except FileNotFoundError:
+        print(f"错误: 找不到文件 {file_path}")
+        return None
+    except Exception as e:
+        print(f"加载数据时出错: {e}")
+        return None
 
 
-def generate_kline_with_kronos(num_points=100):
+def generate_kline_with_kronos(real_data, num_points=100):
     """
-    使用Kronos模型生成K线数据
+    使用Kronos模型基于真实数据生成K线数据
     
     Args:
+        real_data: 真实的历史数据
         num_points: 要生成的数据点数量
     
     Returns:
         DataFrame: 生成的K线数据
     """
     if not KRONOS_AVAILABLE:
-        print("Kronos模型不可用，使用模拟方法")
-        return generate_mock_kline_data(datetime.now() - timedelta(days=num_points), num_points)
+        print("错误: Kronos模型不可用")
+        return None
+    
+    if real_data is None or len(real_data) == 0:
+        print("错误: 没有有效的输入数据")
+        return None
     
     try:
         print("正在加载Kronos模型...")
@@ -113,22 +119,24 @@ def generate_kline_with_kronos(num_points=100):
         # 初始化预测器
         predictor = KronosPredictor(model, tokenizer, device='cuda' if torch.cuda.is_available() else 'cpu')
         
-        # 生成基础历史数据作为输入
-        print("生成基础历史数据...")
-        historical_data = generate_mock_kline_data(datetime.now() - timedelta(days=200), 200)
-        
         # 准备预测所需的数据
-        lookback = min(150, len(historical_data))  # 使用最近150个数据点
+        lookback = min(400, len(real_data))  # 使用最多400个历史数据点
         pred_len = num_points  # 预测未来的num_points个数据点
         
-        x_df = historical_data.tail(lookback)[['open', 'high', 'low', 'close', 'volume']].copy()
-        x_timestamp = historical_data.tail(lookback)['timestamps'].reset_index(drop=True)
+        # 选择最近的lookback个数据点
+        x_df = real_data.tail(lookback)[['open', 'high', 'low', 'close', 'volume']].copy()
+        
+        # 如果缺少amount列，添加一个默认值
+        if 'amount' not in x_df.columns:
+            x_df['amount'] = x_df['close'] * x_df['volume'] / 1000  # 简单估算
+        
+        x_timestamp = real_data.tail(lookback)['timestamps'].reset_index(drop=True)
         
         # 创建未来的时间戳
-        last_date = historical_data['timestamps'].iloc[-1]
+        last_date = real_data['timestamps'].iloc[-1]
         y_timestamp = pd.date_range(start=last_date + timedelta(days=1), periods=pred_len, freq='D')
         
-        print(f"使用Kronos模型预测未来 {pred_len} 天的数据...")
+        print(f"使用Kronos模型基于 {lookback} 天历史数据预测未来 {pred_len} 天的数据...")
         
         # 使用Kronos进行预测
         pred_df = predictor.predict(
@@ -156,8 +164,7 @@ def generate_kline_with_kronos(num_points=100):
         
     except Exception as e:
         print(f"使用Kronos模型时出错: {e}")
-        print("回退到模拟方法生成数据")
-        return generate_mock_kline_data(datetime.now() - timedelta(days=num_points), num_points)
+        return None
 
 
 def plot_kline_chart(df, title="K线图"):
@@ -276,18 +283,33 @@ def plot_matplotlib_kline(df, title="K线图"):
 
 def main():
     """主函数"""
-    print("开始生成K线数据...")
+    print("开始加载真实数据...")
     
-    # 生成K线数据
-    kline_data = generate_kline_with_kronos(num_points=50)  # 生成50个数据点
+    # 加载真实数据
+    real_data = load_real_data("./data/HSI.xlsx")
     
-    print(f"生成了 {len(kline_data)} 条K线数据")
-    print("数据预览:")
+    if real_data is None or len(real_data) == 0:
+        print("无法加载真实数据，程序退出")
+        return
+    
+    print(f"数据预览 (前10行):")
+    print(real_data.head(10))
+    
+    # 使用Kronos模型基于真实数据生成K线数据
+    print("\n开始使用Kronos模型生成K线数据...")
+    kline_data = generate_kline_with_kronos(real_data, num_points=50)  # 生成50个数据点
+    
+    if kline_data is None or len(kline_data) == 0:
+        print("Kronos模型未能生成有效数据")
+        return
+    
+    print(f"生成了 {len(kline_data)} 条预测K线数据")
+    print("预测数据预览 (前10行):")
     print(kline_data.head(10))
     
     # 绘制K线图
     print("\n正在绘制K线图...")
-    plot_kline_chart(kline_data, "使用Kronos模型生成的K线图")
+    plot_kline_chart(kline_data, "使用Kronos模型基于真实数据生成的预测K线图")
     
     # 可选：使用matplotlib绘制（如果需要）
     # plot_matplotlib_kline(kline_data, "K线图 (matplotlib)")
