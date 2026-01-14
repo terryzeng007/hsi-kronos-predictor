@@ -42,8 +42,7 @@ desktop.ini
 # Logs
 *.log
 
-# Data and Output
-data/
+# Data and Output (excluding specific data folders)
 predict_price/
 predict_graph/
 predict_signal/
@@ -60,3 +59,33 @@ tmp/
 
 # Kronos source code (will be cloned during setup)
 kronos_src/
+
+# Specific large data files to exclude
+*.xlsx
+*.xls
+*.csv
+
+# But allow small data files in specific folders
+!data/*.xlsx
+!data/*.xls
+!data/*.csv
+
+# Exclude output files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.svg
+*.html
+*.htm
+*.pdf
+
+# Exclude large files
+*.bin
+*.dat
+*.zip
+*.rar
+*.7z
+*.gz
+*.tar
